@@ -1,0 +1,74 @@
+trigger:
+  - main  # Trigger pipeline on changes to the main branch
+
+pool:
+  vmImage: 'ubuntu-latest'  # Use Ubuntu as the build agent
+
+variables:
+  DB_HOST: 'your-rds-endpoint'  # Replace with actual RDS endpoint
+  DB_NAME: 'your-database'       # Replace with actual database name
+  DB_USER: 'your-username'       # Replace with actual DB user
+  DB_PASS: $(DB_PASSWORD)        # Securely store this as a pipeline secret
+
+stages:
+  - stage: ValidateConnection
+    displayName: "Validate Database Connection"
+    jobs:
+      - job: CheckConnection
+        displayName: "Test Database Connectivity"
+        steps:
+          - script: |
+              echo "Checking database connection..."
+              mysql -h $(DB_HOST) -u $(DB_USER) -p$(DB_PASS) -e "SELECT 1;" $(DB_NAME)
+            displayName: "Validate Database Connection"
+
+  - stage: Migrate
+    displayName: "Apply Migrations"
+    dependsOn: ValidateConnection
+    jobs:
+      - job: ApplyMigrations
+        displayName: "Run Database Migrations"
+        steps:
+          - script: |
+              wget -qO- https://repo1.maven.org/maven2/org/flywaydb/flyway-commandline/9.0.0/flyway-commandline-9.0.0-linux-x64.tar.gz | tar xvz
+              echo "##vso[task.prependpath]$(pwd)/flyway-9.0.0"
+            displayName: "Install Flyway"
+
+          - script: |
+              echo "Starting migration..."
+              flyway -url=jdbc:mysql://$(DB_HOST):3306/$(DB_NAME) -user=$(DB_USER) -password=$(DB_PASS) migrate
+              echo "Migration completed."
+            displayName: "Run Migrations"
+
+          - script: |
+              flyway -url=jdbc:mysql://$(DB_HOST):3306/$(DB_NAME) -user=$(DB_USER) -password=$(DB_PASS) info
+              if [ $? -eq 0 ]; then
+                echo "Migrations successful"
+              else
+                echo "Migrations failed"
+                exit 1
+              fi
+            displayName: "Verify Migrations"
+
+  - stage: Rollback
+    displayName: "Rollback Migrations"
+    condition: failed()
+    jobs:
+      - job: RollbackMigrations
+        displayName: "Revert Database Migrations"
+        steps:
+          - script: |
+              echo "Starting rollback..."
+              flyway -url=jdbc:mysql://$(DB_HOST):3306/$(DB_NAME) -user=$(DB_USER) -password=$(DB_PASS) undo
+              echo "Rollback completed."
+            displayName: "Rollback Last Migration"
+
+          - script: |
+              flyway -url=jdbc:mysql://$(DB_HOST):3306/$(DB_NAME) -user=$(DB_USER) -password=$(DB_PASS) info
+              if [ $? -eq 0 ]; then
+                echo "Rollback successful"
+              else
+                echo "Rollback failed"
+                exit 1
+              fi
+            displayName: "Verify Rollback"
